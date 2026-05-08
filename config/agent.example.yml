@@ -1,0 +1,9 @@
+external_data_path: data/external/records.csv
+AMAP_KEY: "YOUR_API_KEY_HERE"
+
+mysql_config:
+  host: "127.0.0.1"
+  port: 3306
+  user: "YOUR_MYSQL_USER"
+  password: "YOUR_MYSQL_PASSWORD"  # 请修改为你的真实 MySQL 密码
+  database: "agent_memory"

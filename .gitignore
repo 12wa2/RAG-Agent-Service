@@ -1,0 +1,23 @@
+# 1. 忽略虚拟环境 (绝对不能传)
+.venv/
+env/
+
+# 2. 忽略向量数据库实体文件 (你有两处，都必须忽略！)
+chroma_db/
+rag/chroma_db/
+
+# 3. 忽略日志文件
+logs/
+
+# 4. 忽略 Python 运行缓存
+__pycache__/
+*.pyc
+
+# 5. 忽略可能包含隐私数据的临时文件
+md5.txt
+data/
+
+# 6. 忽略含有真实密钥的配置文件 (注意下面这一条！)
+# 如果你的 config 文件夹里有 config.py 或者 .env，把它们写在这里：
+.env
+config/agent.yml
