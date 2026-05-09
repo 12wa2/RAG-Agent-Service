@@ -48,6 +48,17 @@ def create_new_session():
         pass
     return None
 
+# 动作 2.5：告诉后端，给我删掉某个会话
+def delete_session(session_id):
+    try:
+        # 用 DELETE 方式访问 /sessions/{id} 接口
+        res = requests.delete(f"{API_BASE_URL}/sessions/{session_id}")
+        # 如果返回 200，说明后端删除成功
+        return res.status_code == 200
+    except Exception as e:
+        st.sidebar.error(f"删除失败: {e}")
+        return False
+
 # 动作 3：告诉后端，我要查某个特定 ID 的所有聊天记录
 def fetch_messages(session_id):
     try:
@@ -110,9 +121,21 @@ with st.sidebar:
             st.session_state["current_session_id"] = new_sid # 选中新生成的这个
             st.rerun() # 强制刷新整个网页，让新会话显示出来
         
-    # 在右列放一个按钮（暂时禁用它）
-    if col2.button("删除功能暂未实现", use_container_width=True, disabled=True):
-        pass
+    # 在右列放一个“删除当前”按钮
+    if col2.button("删除当前", use_container_width=True):
+        if current_id:
+            # 1. 调后端 API 删数据
+            success = delete_session(current_id)
+            if success:
+                # 2. 从本地缓存列表中移除（如果列表存在的话）
+                if sessions_list:
+                    sessions_list = [s for s in sessions_list if s["session_id"] != current_id]
+                # 3. 将当前选中的 ID 重置，下一次刷新时会自动选中第一个
+                st.session_state["current_session_id"] = sessions_list[0]["session_id"] if sessions_list else None
+                # 4. 强制刷新页面
+                st.rerun()
+            else:
+                st.error("删除失败，请检查后端服务")
 
     st.write("历史会话") # 写一行小字
     # 遍历刚才从后端拉过来的会话名单
