@@ -19,3 +19,13 @@
 ├── main.py           # FastAPI 后端微服务入口
 ├── app.py            # Streamlit 前端交互入口
 └── requirements.txt  # 项目依赖清单
+
+```
+## 📺 演示视频 / Demo
+
+
+https://github.com/user-attachments/assets/d7edd637-3d13-450e-91d5-39ab4f153140
+
+
+
+
