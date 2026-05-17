@@ -1,3 +1,5 @@
 chat_model_name: qwen3-max
+agent_chat_model_name: "rabbit-qwen"
+agent_chat_api_base: "http://127.0.0.1:8001/v1" 
 embedding_model_name: text-embedding-v4
 rerank_model_name: get-reranker

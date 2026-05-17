@@ -1,7 +1,7 @@
 import os
 import uuid
 import json
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
@@ -10,6 +10,7 @@ from typing import List, Optional
 from utils.db_handler import load_history, save_history
 from agent.react_agent import ReactAgent
 from agent.memory_manager import MemoryManager
+from agent.tools.agent_tools import resolve_city_from_inputs
 
 # ==========================================
 # 1. 初始化 FastAPI 应用 (创建一家名叫“智能客服”的云端餐厅)
@@ -27,6 +28,10 @@ app = FastAPI(
 class ChatRequest(BaseModel):
     session_id: str  # 当前聊天的会话ID
     query: str       # 用户最新输入的问题
+    city: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    client_ip: Optional[str] = None
 
 # 规定返回给前端的会话列表，必须长这个样子
 class SessionResponse(BaseModel):
@@ -92,14 +97,82 @@ async def get_messages(session_id: str):
 # 4. 核心对话与 SSE 流式输出机制 (全场最重要逻辑)
 # ==========================================
 
+
+def extract_client_ip(http_request: Request, request_ip: Optional[str]) -> str:
+    """尽量获取真实客户端IP，优先信任前端显式传入，其次读取代理头。"""
+    if request_ip:
+        return request_ip.strip()
+
+    forwarded_for = http_request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    real_ip = http_request.headers.get("x-real-ip", "")
+    if real_ip:
+        return real_ip.strip()
+
+    if http_request.client and http_request.client.host:
+        return http_request.client.host.strip()
+
+    return ""
+
+
+def build_location_context(chat_request: ChatRequest, client_ip: str) -> tuple[str, str, str]:
+    """根据前端传入的位置数据生成高优先级位置说明文本。"""
+    resolved_city, source = resolve_city_from_inputs(
+        city=chat_request.city,
+        longitude=chat_request.longitude,
+        latitude=chat_request.latitude,
+        client_ip=client_ip,
+    )
+
+    if not resolved_city:
+        return "", "", ""
+
+    source_mapping = {
+        "user_provided_city": "用户主动提供的城市",
+        "frontend_coordinates": "前端提供的经纬度",
+        "client_ip": "客户端真实IP",
+        "server_ip": "服务端出口IP兜底定位",
+    }
+    source_desc = source_mapping.get(source, "已知位置数据")
+    location_text = (
+        f"【位置上下文】当前用户所在城市：{resolved_city}。"
+        f"该信息来源于{source_desc}，属于高优先级已知事实。"
+        "若问题涉及天气或本地环境，请直接基于该城市调用 get_user_weather。"
+        "若当前上下文中已经有该城市信息，禁止再调用 get_user_loction 覆盖该城市。"
+    )
+    return location_text, resolved_city, source
+
+
+def inject_location_context(messages: list[dict], location_text: str) -> list[dict]:
+    """将位置上下文注入到第一条用户消息里，避免额外的 system role 兼容问题。"""
+    if not location_text:
+        return messages
+
+    injected_messages = []
+    injected = False
+
+    for message in messages:
+        copied_message = dict(message)
+        if not injected and copied_message.get("role") == "user":
+            original_content = copied_message.get("content", "")
+            copied_message["content"] = f"{location_text}\n\n{original_content}"
+            injected = True
+        injected_messages.append(copied_message)
+
+    return injected_messages
+
+
 @app.post("/api/v1/chat/stream", summary="流式对话接口 (SSE)")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(chat_request: ChatRequest, http_request: Request):
     """
     核心接口：接收用户提问，结合长记忆管理，通过 SSE 流式返回大模型的思考过程
     """
     # 1. 拆解前端传过来的数据包 (通过上面的 Pydantic 保安校验过了，绝对安全)
-    session_id = request.session_id
-    query = request.query
+    session_id = chat_request.session_id
+    query = chat_request.query
+    client_ip = extract_client_ip(http_request, chat_request.client_ip)
     
     # 2. 从数据库提取历史记忆
     history = load_history()
@@ -120,6 +193,8 @@ async def chat_stream(request: ChatRequest):
         session_data["messages"], 
         session_data.get("summary", "")
     )
+    location_text, _, _ = build_location_context(chat_request, client_ip)
+    agent_messages = inject_location_context(final_messages, location_text)
     
     # 6. 先行落库保存：此时不管大模型等会还不回复，用户的提问和新生成的摘要已经死死存在 MySQL 里了
     session_data["summary"] = new_summary
@@ -133,7 +208,7 @@ async def chat_stream(request: ChatRequest):
         full_response = "" # 用来在后台偷偷记录大模型完整说了什么
         try:
             # 大厨开始思考，传入的是切片后的精简历史 (final_messages)
-            generator = agent.execute_stream(final_messages)
+            generator = agent.execute_stream(agent_messages)
             
             # 拿到大模型吐出来的一个个字 (chunk)
             for chunk in generator:

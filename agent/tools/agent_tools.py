@@ -16,13 +16,102 @@ month_arr = ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06",
 external_data = {}
 
 
+def _clean_city_name(city: str | None) -> str:
+    if not city:
+        return ""
+    return city.strip()
+
+
+def resolve_city_from_coordinates(longitude: float | None, latitude: float | None) -> str:
+    """优先使用前端提供的经纬度，通过高德逆地理编码解析城市。"""
+    if longitude is None or latitude is None:
+        return ""
+
+    url = "https://restapi.amap.com/v3/geocode/regeo"
+    params = {
+        "location": f"{longitude},{latitude}",
+        "key": agent_conf["AMAP_KEY"],
+        "extensions": "base",
+    }
+
+    try:
+        data = requests.get(url, params=params, timeout=5).json()
+        logger.info(f"【高德逆地理编码Debug】返回的数据是：{data}")
+
+        if data.get("status") != "1":
+            logger.warning(f"[定位警告] 高德逆地理编码失败: {data}")
+            return ""
+
+        address_component = data.get("regeocode", {}).get("addressComponent", {})
+        city = address_component.get("city")
+        province = address_component.get("province")
+
+        if isinstance(city, list):
+            city = city[0] if city else ""
+
+        if isinstance(city, str) and city.strip():
+            return city.strip()
+
+        if isinstance(province, str) and province.strip():
+            return province.strip()
+
+        return ""
+    except Exception as e:
+        logger.error(f"[定位警告] 高德逆地理编码调用失败: {e}")
+        return ""
+
+
+def resolve_city_from_ip(client_ip: str | None = None) -> str:
+    """使用高德IP定位城市，可传入真实客户端IP，不传则退化为服务端出口IP。"""
+    url = "https://restapi.amap.com/v3/ip"
+    params = {"key": agent_conf["AMAP_KEY"]}
+    if client_ip:
+        params["ip"] = client_ip
+
+    try:
+        data = requests.get(url, params=params, timeout=5).json()
+        logger.info(f"【高德IP定位Debug】返回的数据是：{data}")
+
+        if data.get("status") == "1" and data.get("city"):
+            city = data["city"]
+            if isinstance(city, str) and city.strip():
+                return city.strip()
+
+        logger.warning(f"[定位警告] 高德IP定位未返回有效城市: {data}")
+        return ""
+    except Exception as e:
+        logger.error(f"[定位警告] 高德IP定位调用失败: {e}")
+        return ""
+
+
+def resolve_city_from_inputs(
+    city: str | None = None,
+    longitude: float | None = None,
+    latitude: float | None = None,
+    client_ip: str | None = None,
+) -> tuple[str, str]:
+    """按优先级解析城市：用户输入 > 前端经纬度 > 客户端IP > 服务端IP。"""
+    cleaned_city = _clean_city_name(city)
+    if cleaned_city:
+        return cleaned_city, "user_provided_city"
+
+    geo_city = resolve_city_from_coordinates(longitude=longitude, latitude=latitude)
+    if geo_city:
+        return geo_city, "frontend_coordinates"
+
+    ip_city = resolve_city_from_ip(client_ip=client_ip)
+    if ip_city:
+        return ip_city, "client_ip" if client_ip else "server_ip"
+
+    return "", ""
+
+
 
 @tool(description="根据用户问题，从知识库中检索相关文档并进行的总结")
 def rag_summarize(query:str)->str:
     return rag.rag_summarize(query)
 
-
-@tool(description="获取用户所在的城市天气,以消息字符串形式返回")
+@tool(description="获取指定城市的实时天气信息。仅当已经明确知道城市名称时调用，若用户已在问题中提供城市名称，应直接使用该城市。")
 def get_user_weather(city: str) -> str:
     """调用高德API，根据城市名称获取实时天气"""
     # 简单的清洗，防止传入空值
@@ -65,37 +154,15 @@ def get_user_weather(city: str) -> str:
 
     except Exception as e:
         # 防御性编程：断网或接口超时，不能让整个 Agent 崩溃
-        print(f"[天气API异常] {e}")
+        logger.error(f"[天气API异常] {e}")
         return f"当前网络异常，无法获取{city_name}的天气。"
 
 
 
-@tool(description="获取用户所在的城市名称,以字符串形式返回")
+@tool(description="兜底定位工具：在用户未提供城市、前端也未提供有效定位结果时，使用高德IP定位粗略获取城市名称。若已有更高优先级的位置结果，禁止调用本工具覆盖。")
 def get_user_loction() -> str:
-    """调用高德API，根据当前网络的IP自动获取所在城市"""
-    url = f"https://restapi.amap.com/v3/ip?key={agent_conf['AMAP_KEY']}"
-    
-    try:
-        response = requests.get(url, timeout=5) # 加个5秒超时，防止一直卡住
-        data = response.json()
-        
-
-        # 🌟 加上这行排查代码！看看终端里打印出了什么秘密！
-        print(f"【高德定位Debug】返回的数据是：{data}")
-
-        # status 为 1 表示高德接口请求成功
-        if data.get('status') == '1' and data.get('city'):
-            # 高德返回的可能是空数组 []（如果IP查不到），所以要做个判断
-            if isinstance(data['city'], str): 
-                return data['city']
-                
-        # 如果定位失败（比如查不到），给 Agent 兜底返回一个默认城市，防止程序崩溃
-        return "深圳市" 
-        
-    except Exception as e:
-        # 万一断网了，也返回默认城市
-        print(f"[定位警告] 高德API调用失败: {e}")
-        return "深圳市"
+    """调用高德API，使用当前服务端出口IP进行兜底定位。"""
+    return resolve_city_from_ip()
 
 
 @tool(description="获取用户的ID，以字符串形式返回")

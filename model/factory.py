@@ -6,6 +6,7 @@ from utils.config_handler import rag_conf
 from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.document_compressors.dashscope_rerank import DashScopeRerank # 导入重排器
+from langchain_openai import ChatOpenAI # [新增] 导入 OpenAI 兼容接口，用于连接本地 LLaMA-Factory
 import os # 导入环境变量模块
 class BaseModelFactory(ABC):
     @abstractmethod
@@ -17,6 +18,21 @@ class ChatModelFactory(BaseModelFactory):
     def generator(self) -> Optional[Embeddings | BaseChatModel]:
         return ChatTongyi(model=rag_conf["chat_model_name"])
 
+class AgentChatModelFactory(BaseModelFactory):
+    def generator(self) -> Optional[Embeddings | BaseChatModel]:
+        # 读取智能体专属模型
+        model_name = rag_conf.get("agent_chat_model_name", "rabbit_qwen")
+        api_base = rag_conf.get("agent_chat_api_base", "http://localhost:6006/v1")
+        
+        # LLaMA-Factory 启动的 API 默认兼容 OpenAI 格式
+        # api_key 可以随便填一个非空的字符串，因为本地一般不校验
+        return ChatOpenAI(
+            model=model_name,
+            openai_api_base=api_base,
+            openai_api_key="EMPTY", 
+            temperature=0.0
+            # 注意：此处千万不能加 streaming=True，否则 LLaMA-Factory 在调用工具时会崩溃
+        )
 
 class EmbeddingsFactory(BaseModelFactory):
     def generator(self) -> Optional[Embeddings | BaseChatModel]:
@@ -33,5 +49,6 @@ class ReRankModelFactory(BaseModelFactory):
         )
 
 chat_model = ChatModelFactory().generator()
+agent_chat_model = AgentChatModelFactory().generator() # [新增] 生成智能体专属的模型实例
 embed_model = EmbeddingsFactory().generator()
 rerank_model = ReRankModelFactory().generator()

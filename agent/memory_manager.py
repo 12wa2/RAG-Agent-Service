@@ -80,10 +80,10 @@ class MemoryManager:
         # 如果有摘要，就把摘要伪装成一条 System 消息，悄悄塞在最前面。
         # 相当于给 AI 贴了一张便签：“回答问题前，先看一眼以前的总结”。
         if new_summary:
-            final_messages.append({
-                "role": "system", 
-                "content": f"【历史对话摘要记忆】：{new_summary}\n(请结合以上摘要回答用户的最新问题)"
-            })
+            if recent_messages and recent_messages[0]["role"] == "user":
+                # 修改最近的第一条用户消息，把摘要拼在最前面
+                original_content = recent_messages[0]["content"]
+                recent_messages[0]["content"] = f"【历史对话摘要记忆】：{new_summary}\n\n{original_content}"
             
         # 把刚才截断留下来的“最近几轮原始对话”追加在摘要后面。
         final_messages.extend(recent_messages)

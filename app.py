@@ -18,6 +18,191 @@ from rag.vector_store import VectStoreService # 导入知识库处理服务
 # 前端所有的请求，都要发往这个根地址
 API_BASE_URL = "http://127.0.0.1:8000/api/v1"
 
+browser_geolocation_component = st.components.v2.component(
+    "browser_geolocation",
+    html="""
+    <div class="geo-root">
+      <button id="geo-btn" type="button"></button>
+      <div id="geo-status"></div>
+    </div>
+    """,
+    css="""
+    .geo-root {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    #geo-btn {
+      width: 100%;
+      border: none;
+      border-radius: 0.5rem;
+      padding: 0.6rem 0.9rem;
+      background: var(--st-primary-color);
+      color: white;
+      font-family: var(--st-font);
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    #geo-btn:hover {
+      filter: brightness(0.95);
+    }
+    #geo-status {
+      color: var(--st-secondary-color);
+      font-family: var(--st-font);
+      font-size: 0.9rem;
+      line-height: 1.4;
+    }
+    """,
+    js="""
+    const instances = new WeakMap();
+
+    export default function(component) {
+      const { parentElement, data, setStateValue } = component;
+      const button = parentElement.querySelector("#geo-btn");
+      const status = parentElement.querySelector("#geo-status");
+
+      if (!button || !status) {
+        return;
+      }
+
+      button.textContent = data.button_label || "自动获取位置";
+      status.textContent = data.status_text || "点击按钮后，浏览器会请求定位权限。";
+
+      const requestLocation = () => {
+        if (!navigator.geolocation) {
+          const message = "当前浏览器不支持定位。";
+          status.textContent = message;
+          setStateValue("status", "error");
+          setStateValue("error", message);
+          return;
+        }
+
+        const loadingMessage = "正在获取位置，请允许浏览器访问定位信息...";
+        status.textContent = loadingMessage;
+        setStateValue("status", "loading");
+        setStateValue("error", null);
+
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const { latitude, longitude, accuracy } = position.coords;
+            status.textContent = "定位成功，已回填当前位置。";
+            setStateValue("latitude", latitude);
+            setStateValue("longitude", longitude);
+            setStateValue("accuracy", accuracy ?? null);
+            setStateValue("status", "success");
+            setStateValue("error", null);
+          },
+          (error) => {
+            const fallbackMessage = "定位失败，请检查浏览器定位权限。";
+            const message = error && error.message ? error.message : fallbackMessage;
+            status.textContent = message;
+            setStateValue("status", "error");
+            setStateValue("error", message);
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 300000,
+          }
+        );
+      };
+
+      const previous = instances.get(parentElement);
+      if (previous) {
+        button.removeEventListener("click", previous.requestLocation);
+      }
+      button.addEventListener("click", requestLocation);
+      instances.set(parentElement, { requestLocation });
+
+      return () => {
+        const stored = instances.get(parentElement);
+        if (stored) {
+          button.removeEventListener("click", stored.requestLocation);
+          instances.delete(parentElement);
+        }
+      };
+    }
+    """,
+)
+
+
+def get_browser_geolocation():
+    result = browser_geolocation_component(
+        key="browser_geolocation",
+        default={
+            "latitude": None,
+            "longitude": None,
+            "accuracy": None,
+            "status": "idle",
+            "error": None,
+        },
+        data={
+            "button_label": "自动获取位置",
+            "status_text": st.session_state.get("auto_location_hint", ""),
+        },
+        on_latitude_change=lambda: None,
+        on_longitude_change=lambda: None,
+        on_accuracy_change=lambda: None,
+        on_status_change=lambda: None,
+        on_error_change=lambda: None,
+    )
+
+    return {
+        "latitude": getattr(result, "latitude", None),
+        "longitude": getattr(result, "longitude", None),
+        "accuracy": getattr(result, "accuracy", None),
+        "status": getattr(result, "status", None),
+        "error": getattr(result, "error", None),
+    }
+
+
+def parse_optional_float(raw_value):
+    raw_text = str(raw_value).strip() if raw_value is not None else ""
+    if not raw_text:
+        return None
+
+    try:
+        return float(raw_text)
+    except ValueError:
+        return None
+
+
+def sync_auto_location(location_data):
+    """将浏览器定位结果同步到表单状态里，供后端后续调用高德逆地理编码。"""
+    if not isinstance(location_data, dict):
+        return
+
+    status = location_data.get("status")
+    error_message = location_data.get("error")
+    if status == "error" and error_message:
+        st.session_state["auto_location_error"] = f"自动定位失败：{error_message}"
+        st.session_state["auto_location_hint"] = "定位失败，请检查浏览器定位权限后重试。"
+        return
+
+    latitude = location_data.get("latitude")
+    longitude = location_data.get("longitude")
+    if latitude is None or longitude is None:
+        return
+
+    current_signature = f"{latitude},{longitude}"
+    previous_signature = st.session_state.get("auto_location_signature")
+    if previous_signature == current_signature:
+        return
+
+    st.session_state["location_lat"] = str(latitude)
+    st.session_state["location_lng"] = str(longitude)
+    # 自动定位成功后，清空手填城市，避免手填城市覆盖经纬度解析结果
+    st.session_state["location_city"] = ""
+    st.session_state["auto_location_signature"] = current_signature
+    st.session_state["auto_location_error"] = ""
+    st.session_state["auto_location_hint"] = "如需重新定位，可再次点击上方按钮。"
+
+    accuracy = location_data.get("accuracy")
+    if isinstance(accuracy, (int, float)):
+        st.session_state["auto_location_status"] = f"已自动获取当前位置，定位精度约 {accuracy:.1f} 米。"
+    else:
+        st.session_state["auto_location_status"] = "已自动获取当前位置，经纬度已回填。"
+
 # ---------------------------------------------------------
 # 3. 封装三个“打电话”动作 (专门和 FastAPI 沟通)
 # ---------------------------------------------------------
@@ -153,6 +338,39 @@ with st.sidebar:
             
     st.divider() # 画横线
 
+    st.header("位置设置")
+    st.caption("浏览器自动定位成功后会自动回填经纬度；若手动填写城市，则手动城市优先。")
+    st.write("自动定位")
+    st.caption("点击下方定位按钮并允许浏览器访问位置后，会自动回填经纬度。")
+    auto_location = get_browser_geolocation()
+    sync_auto_location(auto_location)
+
+    auto_location_status = st.session_state.get("auto_location_status", "")
+    if auto_location_status:
+        st.success(auto_location_status)
+    auto_location_error = st.session_state.get("auto_location_error", "")
+    if auto_location_error:
+        st.error(auto_location_error)
+
+    location_city = st.text_input(
+        "当前城市",
+        key="location_city",
+        placeholder="例如：上海市",
+        help="如果你已经知道自己的城市，直接填写这里，优先级最高；留空时会优先使用自动定位得到的经纬度。",
+    )
+    location_lat = st.text_input(
+        "纬度",
+        key="location_lat",
+        placeholder="例如：31.2304",
+        help="可选；与经度一起填写时，后端会使用高德逆地理编码解析城市。",
+    )
+    location_lng = st.text_input(
+        "经度",
+        key="location_lng",
+        placeholder="例如：121.4737",
+        help="可选；与纬度一起填写时，后端会使用高德逆地理编码解析城市。",
+    )
+
     # --- 知识库上传模块 ---
     st.header("知识库管理")
     st.write("上传文档并自动更新到向量库。")
@@ -191,13 +409,26 @@ for message in current_messages:
     st.chat_message(message["role"]).write(message["content"])
 
 # ---------------------------------------------------------
-# 8. 最底部的输入框：接客与网络流解析 (全场最难的地方)
+# 8. 最底部的输入框：接客与网络流解析
 # ---------------------------------------------------------
 # 在底部画一个聊天输入框，等待用户打字回车
 prompt = st.chat_input()
 
 # 如果用户按了回车，而且当前有合法的会话 ID
 if prompt and current_id:
+    latitude = parse_optional_float(st.session_state.get("location_lat"))
+    longitude = parse_optional_float(st.session_state.get("location_lng"))
+    has_lat_input = bool(str(st.session_state.get("location_lat", "")).strip())
+    has_lng_input = bool(str(st.session_state.get("location_lng", "")).strip())
+
+    if (has_lat_input and latitude is None) or (has_lng_input and longitude is None):
+        st.error("经纬度格式不正确，请输入合法的数字。")
+        st.stop()
+
+    if has_lat_input != has_lng_input:
+        st.error("请同时填写经度和纬度，或两者都留空。")
+        st.stop()
+
     # 先立刻把用户刚刚打出来的字，画到屏幕上
     st.chat_message("user").write(prompt)
 
@@ -209,7 +440,13 @@ if prompt and current_id:
             # 拼装请求网址：http://127.0.0.1:8000/api/v1/chat/stream
             url = f"{API_BASE_URL}/chat/stream"
             # 组装要发给后端的包裹：告诉后端“我是哪个对话”，以及“我问了啥”
-            payload = {"session_id": current_id, "query": prompt}
+            payload = {
+                "session_id": current_id,
+                "query": prompt,
+                "city": st.session_state.get("location_city", "").strip() or None,
+                "latitude": latitude,
+                "longitude": longitude,
+            }
             
             # 向后端发请求。stream=True 是灵魂！意思是：建立长连接，慢慢接数据，不要挂电话！
             with requests.post(url, json=payload, stream=True) as response:
