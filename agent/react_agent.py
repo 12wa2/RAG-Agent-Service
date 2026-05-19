@@ -1,6 +1,6 @@
 from model.factory import agent_chat_model
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from utils.prompt_loader import load_system_prompts
 from agent.tools.agent_tools import (rag_summarize, get_user_weather, get_user_loction, get_user_id,
                                      get_current_month, fetch_external_data, fill_context_for_report)
@@ -8,6 +8,11 @@ from agent.tools.middleware import monitor_tool, log_before_model, report_prompt
 
 class ReactAgent:
     def __init__(self):
+        if agent_chat_model is None:
+            raise ImportError(
+                "未安装 langchain_openai，无法初始化 LoRA + RAG 评测所需的 Agent 模型。"
+            )
+
         self.agent = create_agent(
             model = agent_chat_model, # 使用你微调的专属模型
             system_prompt = load_system_prompts(),
@@ -51,6 +56,46 @@ class ReactAgent:
             return ""
 
         return text + "\n"
+
+    def _collect_run_result(self, messages) -> dict:
+        answer_parts: list[str] = []
+        tool_outputs: list[str] = []
+        tool_names: list[str] = []
+
+        for message in messages:
+            if isinstance(message, AIMessage):
+                if getattr(message, "tool_calls", None):
+                    tool_names.extend(
+                        tool_call.get("name", "")
+                        for tool_call in message.tool_calls
+                        if isinstance(tool_call, dict)
+                    )
+                    continue
+
+                text = self._normalize_content(message.content)
+                if text and not self._looks_like_tool_call_text(text):
+                    answer_parts.append(text)
+                continue
+
+            if isinstance(message, ToolMessage):
+                tool_text = self._normalize_content(message.content)
+                if tool_text:
+                    tool_outputs.append(tool_text)
+
+        return {
+            "answer": "\n".join(part for part in answer_parts if part).strip(),
+            "tool_used": bool(tool_names),
+            "tool_names": tool_names,
+            "tool_outputs": tool_outputs,
+        }
+
+    def execute(self, messages: list) -> dict:
+        input_dict = {
+            "messages": messages
+        }
+        result = self.agent.invoke(input_dict, context={"report": False})
+        final_messages = result.get("messages", []) if isinstance(result, dict) else []
+        return self._collect_run_result(final_messages)
 
     def execute_stream(self, messages: list):
         input_dict = {

@@ -66,29 +66,43 @@ class RagSummarizeService(object):
             logger.error(f"[Rerank异常] 自动降级至粗排结果，错误信息: {str(e)}")
             return docs[:top_n]
 
-    def rag_summarize(self, query: str) -> str:
-        # 第一级火箭：混合检索（粗排）
-        initial_docs = self.retriever_docs(query)
-
-        # 第二级火箭：对象化精排（重排）
-        context_docs = self._rerank_docs(query, initial_docs, top_n=5)
-
-        # 格式化上下文
+    def _format_context(self, docs: list[Document]) -> str:
         context = ""
         counter = 0
-        for doc in context_docs:
+        for doc in docs:
             counter += 1
             # 备注：DashScopeRerank 默认会将分数存在 metadata 的 'relevance_score' 中
             score = doc.metadata.get("relevance_score", "N/A")
             context += f"【参考资料{counter}】(相关度:{score}): {doc.page_content}\n"
+        return context
+
+    def build_context(self, query: str, use_rerank: bool = True, top_n: int = 5) -> tuple[str, list[Document]]:
+        # 第一级火箭：混合检索（粗排）
+        initial_docs = self.retriever_docs(query)
+
+        # 第二级火箭：按需执行精排
+        if use_rerank:
+            context_docs = self._rerank_docs(query, initial_docs, top_n=top_n)
+        else:
+            context_docs = initial_docs[:top_n]
+
+        return self._format_context(context_docs), context_docs
+
+    def answer_with_context(self, query: str, use_rerank: bool = True, top_n: int = 5) -> tuple[str, str]:
+        context, _ = self.build_context(query, use_rerank=use_rerank, top_n=top_n)
 
         # 第三级火箭：大模型生成总结
-        return self.chain.invoke(
+        answer = self.chain.invoke(
             {
                 "input": query,
                 "context": context,
             }
         )
+        return answer, context
+
+    def rag_summarize(self, query: str) -> str:
+        answer, _ = self.answer_with_context(query, use_rerank=True, top_n=5)
+        return answer
 
 if __name__ == "__main__":
     rag = RagSummarizeService()

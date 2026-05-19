@@ -21,3 +21,6 @@ data/
 # 如果你的 config 文件夹里有 config.py 或者 .env，把它们写在这里：
 .env
 config/agent.yml
+
+# 7. Evaluation outputs
+eval/reports/

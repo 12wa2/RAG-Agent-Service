@@ -6,8 +6,12 @@ from utils.config_handler import rag_conf
 from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.document_compressors.dashscope_rerank import DashScopeRerank # 导入重排器
-from langchain_openai import ChatOpenAI # [新增] 导入 OpenAI 兼容接口，用于连接本地 LLaMA-Factory
 import os # 导入环境变量模块
+
+try:
+    from langchain_openai import ChatOpenAI # [新增] 导入 OpenAI 兼容接口，用于连接本地 LLaMA-Factory
+except ImportError:
+    ChatOpenAI = None
 class BaseModelFactory(ABC):
     @abstractmethod
     def generator(self) -> Optional[Embeddings | BaseChatModel]:
@@ -20,6 +24,9 @@ class ChatModelFactory(BaseModelFactory):
 
 class AgentChatModelFactory(BaseModelFactory):
     def generator(self) -> Optional[Embeddings | BaseChatModel]:
+        if ChatOpenAI is None:
+            return None
+
         # 读取智能体专属模型
         model_name = rag_conf.get("agent_chat_model_name", "rabbit_qwen")
         api_base = rag_conf.get("agent_chat_api_base", "http://localhost:6006/v1")
